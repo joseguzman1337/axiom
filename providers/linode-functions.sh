@@ -1,5 +1,4 @@
 #!/bin/bash
-
 AXIOM_PATH="$HOME/.axiom"
 source "$AXIOM_PATH/interact/includes/appliance.sh"
 LOG="$AXIOM_PATH/log.txt"
@@ -18,12 +17,33 @@ instance_id() {
 # takes one argument, name of instance, returns raw IP address
 instance_ip() {
 	name="$1"
-	instances | jq -r ".[] | select(.label==\"$name\") | .ipv4[]"
+	instances | jq -r ".[] | select(.label==\"$name\") | .ipv4[0]"
+}
+
+poweron() {
+    instance_name="$1"
+    linode-cli linodes boot $(instance_id $instance_name)
+}
+
+poweroff() {
+    instance_name="$1"
+    linode-cli linodes shutdown $(instance_id $instance_name)
+}
+
+reboot(){
+    instance_name="$1"
+    linode-cli linodes reboot $(instance_id $instance_name)
 }
 
 instance_ip_cache() {
 	name="$1"
-	cat "$AXIOM_PATH"/.sshconfig | grep -A 1 "$name" | awk '{ print $2 }' | tail -n 1
+    config="$2"
+    ssh_config="$AXIOM_PATH/.sshconfig"
+
+    if [[ "$config" != "" ]]; then
+        ssh_config="$config"
+    fi
+    cat "$ssh_config" | grep -A 1 "$name" | awk '{ print $2 }' | tail -n 1
 }
 
 instance_list() {
@@ -37,16 +57,25 @@ instance_menu() {
 
 quick_ip() {
 	data="$1"
-	ip=$(echo $data | jq -r ".[] | select(.label == \"$name\") | .ipv4[]")
+	ip=$(echo $data | jq -r ".[] | select(.label == \"$name\") | .ipv4[0]")
 	echo $ip
 }
 
 instance_pretty() {
-	data=$(instances)
-
-	i=0
-	#for f in $(echo $data | jq -r '.[].size.price_monthly'); do new=$(expr $i + $f); i=$new; done
-	(echo "Instance,IP,Region,Memory,\$/M" && echo $data | jq  -r '.[] | [.label,.ipv4[],.region,.specs.memory] | @csv' && echo "_,_,_,Total,\$$i") | sed 's/"//g' | column -t -s, | perl -pe '$_ = "\033[0;37m$_\033[0;34m" if($. % 2)'
+  data=$(instances)
+  #number of linodes
+  linodes=$(echo $data|jq -r '.[]|.id'|wc -l )
+  #default size from config file
+  type="$(jq -r .default_size "$AXIOM_PATH/axiom.json")"
+  #monthly price of linode type 
+  price=$(linode-cli linodes type-view $type --json|jq -r '.[].price.monthly')
+  totalPrice=$(( $price * $linodes))
+  header="Instance,Primary Ip,Backend Ip,Region,Memory,Status,\$/M"
+  totals="_,_,_,Instances,$linodes,Total,\$$totalPrice"
+  fields=".[] | [.label,.ipv4[0],.ipv4[1],.region,.specs.memory,.status, \"$price\"]| @csv"
+  #printing part
+  #sort -k1 sorts all data by label/instance/linode name
+  (echo "$header" && echo $data|(jq -r "$fields" |sort -k1) && echo "$totals") | sed 's/"//g' | column -t -s, | perl -pe '$_ = "\033[0;37m$_\033[0;34m" if($. % 2)'
 }
 
 # identifies the selected instance/s
@@ -57,16 +86,13 @@ selected_instance() {
 get_image_id() {
 	query="$1"
 	images=$(linode-cli images list --json)
-	name=$(echo $images | jq -r ".[].label" | grep "$query" | tail -n 1)
-	id=$(echo $images |  jq -r ".[] | select(.label==\"$name\") | .id")
+	id=$(echo $images |  jq -r ".[] | select(.label==\"$query\") | .id")
 	echo $id
 }
-#deletes instance, if the second argument is set to "true", will not prompt
+
 delete_instance() {
     name="$1"
-    force="$2"
-	id="$(instance_id "$name")"
-    
+  	id="$(instance_id "$name")"
     linode-cli linodes delete "$id"
 }
 
@@ -76,64 +102,73 @@ instance_exists() {
 }
 
 list_regions() {
-    doctl compute region list
+    linode-cli regions list
 }
 
 regions() {
-    doctl compute region list -o json
+    linode-cli regions list --json | jq -r '.[].id'
 }
 
 instance_sizes() {
-    doctl compute size list -o json
+	echo "Needs conversion"
+    #doctl compute size list -o json
 }
 
 # List DNS records for domain
 list_dns() {
 	domain="$1"
 
-	doctl compute domain records list "$domain"
+	echo "Needs conversion"
+	# doctl compute domain records list "$domain"
 }
 
 list_domains_json() {
-    doctl compute domain list -o json
+    echo "Needs conversion"
+    # doctl compute domain list -o json
 }
 
 # List domains
 list_domains() {
-	doctl compute domain list
+	echo "Needs conversion"
+	# doctl compute domain list
 }
 
 list_subdomains() {
     domain="$1"
 
-    doctl compute domain records list $domain -o json | jq '.[]'
+	echo "Needs conversion"
+    # doctl compute domain records list $domain -o json | jq '.[]'
 }
 # get JSON data for snapshots
 snapshots() {
 	linode-cli images list --json
+}
+# only displays private images 
+get_snapshots() {
+    linode-cli images list --is_public false
 }
 
 delete_record() {
     domain="$1"
     id="$2"
 
-    doctl compute domain records delete $domain $id
+	echo "Needs conversion"
+    #doctl compute domain records delete $domain $id
 }
 
 delete_record_force() {
     domain="$1"
     id="$2"
 
-    doctl compute domain records delete $domain $id -f
+	echo "Needs conversion"
+    #doctl compute domain records delete $domain $id -f
 }
+
 # Delete a snapshot by its name
 delete_snapshot() {
 	name="$1"
-
-	snapshot_data=$(snapshots)
-	snapshot_id=$(echo $snapshot_data | jq -r ".[] | select(.label==\"$name\") | .id")
-	
-	linode-cli images delete "$snapshot_id" 
+    image_id=$(get_image_id "$name")
+	linode-cli images delete "$image_id"
 }
 
 add_dns_record() {
@@ -141,7 +176,8 @@ add_dns_record() {
     domain="$2"
     ip="$3"
 
-    doctl compute domain records create $domain --record-type A --record-name $subdomain --record-data $ip
+	echo "Needs conversion"
+    # doctl compute domain records create $domain --record-type A --record-name $subdomain --record-data $ip
 }
 
 msg_success() {
@@ -167,13 +203,11 @@ query_instances() {
 	selected=""
 
 	for var in "$@"; do
-		if [[ "$var" =~ "*" ]]
-		then
+		if [[ "$var" =~ "*" ]]; then
 			var=$(echo "$var" | sed 's/*/.*/g')
 			selected="$selected $(echo $droplets | jq -r '.[].label' | grep "$var")"
 		else
-			if [[ $query ]];
-			then
+			if [[ $query ]]; then
 				query="$query\|$var"
 			else
 				query="$var"
@@ -181,12 +215,10 @@ query_instances() {
 		fi
 	done
 
-	if [[ "$query" ]]
-	then
+	if [[ "$query" ]]; then
 		selected="$selected $(echo $droplets | jq -r '.[].label' | grep -w "$query")"
 	else
-		if [[ ! "$selected" ]]
-		then
+		if [[ ! "$selected" ]];	then
 			echo -e "${Red}No instance supplied, use * if you want to delete all instances...${Color_Off}"
 			exit
 		fi
@@ -198,15 +230,16 @@ query_instances() {
 
 query_instances_cache() {
 	selected=""
+    ssh_conf="$AXIOM_PATH/.sshconfig"
 
 	for var in "$@"; do
-		if [[ "$var" =~ "*" ]]
-		then
+        if [[ "$var" =~ "-F=" ]]; then
+            ssh_conf="$(echo "$var" | cut -d "=" -f 2)"
+        elif [[ "$var" =~ "*" ]]; then
 			var=$(echo "$var" | sed 's/*/.*/g')
-			selected="$selected $(cat "$AXIOM_PATH"/.sshconfig | grep "Host " | awk '{ print $2 }' | grep "$var")"
+            selected="$selected $(cat "$ssh_conf" | grep "Host " | awk '{ print $2 }' | grep "$var")"
 		else
-			if [[ $query ]];
-			then
+			if [[ $query ]]; then
 				query="$query\|$var"
 			else
 				query="$var"
@@ -214,12 +247,10 @@ query_instances_cache() {
 		fi
 	done
 
-	if [[ "$query" ]]
-	then
-		selected="$selected $(cat "$AXIOM_PATH"/.sshconfig | grep "Host " | awk '{ print $2 }' | grep -w "$query")"
+	if [[ "$query" ]]; then
+        selected="$selected $(cat "$ssh_conf" | grep "Host " | awk '{ print $2 }' | grep -w "$query")"
 	else
-		if [[ ! "$selected" ]]
-		then
+		if [[ ! "$selected" ]]; then
 			echo -e "${Red}No instance supplied, use * if you want to delete all instances...${Color_Off}"
 			exit
 		fi
@@ -229,26 +260,44 @@ query_instances_cache() {
 	echo -n $selected
 }
 
-# take no arguments, generate a SSH config from the current Digitalocean layout
+# Generate SSH config specfied in generate_sshconfig key:value in account.json
+#
 generate_sshconfig() {
+	accounts=$(ls -l "$AXIOM_PATH/accounts/" | grep "json" | grep -v 'total ' | awk '{ print $9 }' | sed 's/\.json//g')
+	current=$(ls -lh "$AXIOM_PATH/axiom.json" | awk '{ print $11 }' | tr '/' '\n' | grep json | sed 's/\.json//g') > /dev/null 2>&1
 	droplets="$(instances)"
-	echo -n "" > $AXIOM_PATH/.sshconfig.new
+    sshnew="$AXIOM_PATH/.sshconfig.new$RANDOM"
+	echo -n "" > $sshnew 
+	echo -e "\tServerAliveInterval 60\n" >> $sshnew 
+	sshkey="$(cat "$AXIOM_PATH/axiom.json" | jq -r '.sshkey')"
+	echo -e "IdentityFile $HOME/.ssh/$sshkey" >> $sshnew 
+	generate_sshconfig="$(cat "$AXIOM_PATH/axiom.json" | jq -r '.generate_sshconfig')"
 
-	for name in $(echo "$droplets" | jq -r '.[].label')
-	do 
-		ip=$(echo "$droplets" | jq -r ".[] | select(.label==\"$name\") | .ipv4[]")
-		echo -e "Host $name\n\tHostName $ip\n\tUser op\n\tPort 2266\n" >> $AXIOM_PATH/.sshconfig.new
-    echo -e "ServerAliveInterval 60" >> $AXIOM_PATH/.sshconfig.new
-	done
-	mv $AXIOM_PATH/.sshconfig.new $AXIOM_PATH/.sshconfig
-	
-	if [ "$key" != "null" ]
-	then
-		gen_app_sshconfig
-	fi
+    if [[ "$generate_sshconfig" == "private" ]]; then
+        echo -e "Warning your SSH config generation toggle is set to 'Private' for account : $(echo $current)."
+        echo -e "axiom will always attempt to SSH into the instances from their private backend network interface. To revert: axiom-ssh --just-generate"
+
+    for name in $(echo "$droplets" | jq -r '.[].label'); do
+        ip=$(echo "$droplets" | jq -r ".[] | select(.label==\"$name\") | .ipv4[1]")
+        echo -e "Host $name\n\tHostName $ip\n\tUser op\n\tPort 2266\n" >> $sshnew 
+     done
+
+    mv $sshnew  $AXIOM_PATH/.sshconfig
+
+	elif [[ "$generate_sshconfig" == "cache" ]]; then
+	    echo -e "Warning your SSH config generation toggle is set to 'Cache' for account : $(echo $current)."
+    	echo -e "axiom will never attempt to regenerate the SSH config. To change edit $HOME/.axiom/account/$current.json"
+
+    # If anything but "private" or "cache" is parsed from the generate_sshconfig in account.json, generate public IPs only
+    #
+	else
+        for name in $(echo "$droplets" | jq -r '.[].label'); do
+            ip=$(echo "$droplets" | jq -r ".[] | select(.label==\"$name\") | .ipv4[0]")
+            echo -e "Host $name\n\tHostName $ip\n\tUser op\n\tPort 2266\n" >> $sshnew
+        done
+	mv $sshnew  $AXIOM_PATH/.sshconfig
+    fi
 }
-
-# create an instance, name, image_id (the source), sizes_slug, or the size (e.g 1vcpu-1gb), region, boot_script (this is required for expiry)
 
 image_id() {
 	name="$1"
@@ -262,7 +311,7 @@ create_instance() {
 	region="$4"
 	boot_script="$5"
 	root_pass="$(jq -r .do_key "$AXIOM_PATH/axiom.json")"
-	linode-cli linodes create  --type "$size_slug" --region "$region" --image "$image_id" --label "$name" --root_pass "$root_pass" 2>&1 >> /dev/null
+	linode-cli linodes create  --type "$size_slug" --region "$region" --image "$image_id" --label "$name" --root_pass "$root_pass" --private_ip true 2>&1 >> /dev/null
 	sleep 260
 }
 
@@ -287,23 +336,20 @@ lsplit() {
 	rm $src
 	a=1
 
-	for f in $(ls | grep x)
-	do
+	for f in $(ls | grep x); do
 		mv $f $a.txt
 		a=$((a+1))
 	done
 
 	i=1
-	for instance in $(echo $instances | tr ' ' '\n')
-	do
+	for instance in $(echo $instances | tr ' ' '\n'); do
 		mv $i.txt $instance.txt
 		i=$((i+1))
 	done
-	
+
 	cd $orig_pwd
 	echo -n $split_dir
 }
-
 
 # Check if host is in .sshconfig, and if it's not, regenerate sshconfig
 conf_check() {
@@ -311,10 +357,7 @@ conf_check() {
 
 	l="$(cat "$AXIOM_PATH/.sshconfig" | grep "$instance" | wc -l | awk '{ print $1 }')"
 
-	if [[ $l -lt 1 ]]
-	then
+	if [[ $l -lt 1 ]]; then
 		generate_sshconfig	
 	fi
 }
-
-

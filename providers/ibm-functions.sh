@@ -5,31 +5,75 @@ LOG="$AXIOM_PATH/log.txt"
 
 # takes no arguments, outputs JSON object with instances
 instances() {
-	ibmcloud  sl vs list --output json
+ibmcloud sl vs list --column datacenter --column domain --column hostname --column id --column cpu --column memory --column public_ip --column private_ip --column power_state --column created_by --column action --output json
+	#ibmcloud  sl vs list --output json
+}
+
+poweron() {
+instance_name="$1"
+force="$2"
+if [ "$force" == "true" ]
+then
+ibmcloud sl vs power-on $(instance_id $instance_name) --force
+else
+ibmcloud sl vs power-on $(instance_id $instance_name)
+fi
+}
+
+poweroff() {
+instance_name="$1"
+force="$2"
+if [ "$force" == "true" ]
+then
+ibmcloud sl vs power-off $(instance_id $instance_name) --force
+else
+ibmcloud sl vs power-off $(instance_id $instance_name) 
+fi
+}
+
+reboot(){
+instance_name="$1"
+force="$2"
+if [ "$force" == "true" ]
+then
+ibmcloud sl vs reboot $(instance_id $instance_name) --force
+else
+ibmcloud sl vs reboot $(instance_id $instance_name) 
+fi
 }
 
 get_image_id() {
 	query="$1"
 	images=$(ibmcloud sl image list --private --output json)
-	name=$(echo $images | jq -r ".[].name" | grep "$query" | tail -n 1)
+	name=$(echo $images | jq -r ".[].name" | grep -wx "$query" | tail -n 1)
 	id=$(echo $images |  jq -r ".[] | select(.name==\"$name\") | .id")
 
 	echo $id
+}
+
+get_snapshots() {
+	ibmcloud sl image list --private
+}
+
+delete_snapshot() {
+ name=$1
+ image_id=$(get_image_id "$name")	
+ ibmcloud sl image delete "$image_id"
 }
 
 snapshots() {
 	ibmcloud sl image list --output json --private
 }
 
-delete_snapshot() {
-	id="$(snapshots | jq -r ".[] | select(.name==\"$1\") | .id")"
-
-	 ibmcloud sl image delete "$id"
-}
-
 instance_ip_cache() {
 	name="$1"
-	cat "$AXIOM_PATH"/.sshconfig | grep -A 1 "$name" | awk '{ print $2 }' | tail -n 1
+    config="$2"
+    ssh_config="$AXIOM_PATH/.sshconfig"
+
+    if [[ "$config" != "" ]]; then
+        ssh_config="$config"
+    fi
+    cat "$ssh_config" | grep -A 1 "$name" | awk '{ print $2 }' | tail -n 1
 }
 
 
@@ -82,13 +126,12 @@ instance_exists() {
 
 list_regions() {
 #     doctl compute region list
-      ibmcloud regions -q
+      ibmcloud sl vs options | sed -n '/datacenter/,/Size/p' | tr -s ' ' | rev | cut -d  ' ' -f 1| rev | tail -n +2 | head -n -1 | tr '\n' ','
 }
-
 
 regions() {
 #    doctl compute region list -o json
-     ibmcloud regions -q --output json
+     ibmcloud sl vs options | sed -n '/datacenter/,/Size/p' | tr -s ' ' | rev | cut -d  ' ' -f 1 | rev | tail -n +2 | head -n -1 | tr '\n' ','
 }
 
 instance_sizes() {
@@ -194,12 +237,14 @@ query_instances() {
 
 query_instances_cache() {
 	selected=""
+    ssh_conf="$AXIOM_PATH/.sshconfig"
 
 	for var in "$@"; do
-		if [[ "$var" =~ "*" ]]
-		then
+        if [[ "$var" =~ "-F=" ]]; then
+            ssh_conf="$(echo "$var" | cut -d "=" -f 2)"
+        elif [[ "$var" =~ "*" ]]; then
 			var=$(echo "$var" | sed 's/*/.*/g')
-			selected="$selected $(cat "$AXIOM_PATH"/.sshconfig | grep "Host " | awk '{ print $2 }' | grep "$var")"
+            selected="$selected $(cat "$ssh_conf" | grep "Host " | awk '{ print $2 }' | grep "$var")"
 		else
 			if [[ $query ]];
 			then
@@ -212,7 +257,7 @@ query_instances_cache() {
 
 	if [[ "$query" ]]
 	then
-		selected="$selected $(cat "$AXIOM_PATH"/.sshconfig | grep "Host " | awk '{ print $2 }' | grep -w "$query")"
+        selected="$selected $(cat "$ssh_conf" | grep "Host " | awk '{ print $2 }' | grep -w "$query")"
 	else
 		if [[ ! "$selected" ]]
 		then
@@ -233,19 +278,43 @@ quick_ip() {
 	echo $ip
 }
 
-# take no arguments, generate a SSH config from the current Digitalocean layout
+# Parse generate_sshconfig file in account.json and generate the SSH config specifed
+#
 generate_sshconfig() {
+	accounts=$(ls -l "$AXIOM_PATH/accounts/" | grep "json" | grep -v 'total ' | awk '{ print $9 }' | sed 's/\.json//g')
+	current=$(ls -lh ~/.axiom/axiom.json | awk '{ print $11 }' | tr '/' '\n' | grep json | sed 's/\.json//g') > /dev/null 2>&1
 	droplets="$(instances)"
-	echo -n "" > $AXIOM_PATH/.sshconfig.new
+        sshnew="$AXIOM_PATH/.sshconfig.new$RANDOM"
+	echo -n "" > $sshnew 
+	echo -e "\tServerAliveInterval 60\n" >> $sshnew 
+	sshkey="$(cat "$AXIOM_PATH/axiom.json" | jq -r '.sshkey')"
+	echo -e "IdentityFile $HOME/.ssh/$sshkey" >> $sshnew 
+	generate_sshconfig="$(cat "$AXIOM_PATH/axiom.json" | jq -r '.generate_sshconfig')"
 
-	for name in $(echo "$droplets" | jq -r '.[].hostname')
+  if [[ "$generate_sshconfig" == "private" ]]; then
+  echo -e "Warning your SSH config generation toggle is set to 'Private' for account : $(echo $current)."
+  echo -e "axiom will always attempt to SSH into the instances from their private backend network interface. To revert run: axiom-ssh --just-generate"
+  for name in $(echo "$droplets" | jq -r '.[].hostname')
+  do 
+  ip=$(echo "$droplets" | jq -r ".[] | select(.hostname==\"$name\") | .primaryBackendIpAddress")
+  echo -e "Host $name\n\tHostName $ip\n\tUser op\n\tPort 2266\n" >> $sshnew 
+  done
+  mv $sshnew  $AXIOM_PATH/.sshconfig
+
+	elif [[ "$generate_sshconfig" == "cache" ]]; then
+	echo -e "Warning your SSH config generation toggle is set to 'Cache' for account : $(echo $current)."
+	echo -e "axiom will never attempt to regenerate the SSH config. To revert run: axiom-ssh --just-generate"
+	
+  # If anything but "private" or "cache" is parsed from the generate_sshconfig in account.json, generate public IPs only
+  #
+	else 
+  for name in $(echo "$droplets" | jq -r '.[].hostname')
 	do 
-		ip=$(echo "$droplets" | jq -r ".[] | select(.hostname==\"$name\") | .primaryIpAddress")
-		echo -e "Host $name\n\tHostName $ip\n\tUser op\n\tPort 2266\n" >> $AXIOM_PATH/.sshconfig.new
-    echo -e "ServerAliveInterval 60" >> $AXIOM_PATH/.sshconfig.new
-    echo -e "Host *\n\tControlMaster auto\n\tControlPath  ~/.ssh/sockets/%r@%h-%p\n\tControlPersist 600" >> $AXIOM_PATH/.sshconfig.new
+	ip=$(echo "$droplets" | jq -r ".[] | select(.hostname==\"$name\") | .primaryIpAddress")
+	echo -e "Host $name\n\tHostName $ip\n\tUser op\n\tPort 2266\n" >> $sshnew 
 	done
-	mv $AXIOM_PATH/.sshconfig.new $AXIOM_PATH/.sshconfig
+	mv $sshnew  $AXIOM_PATH/.sshconfig
+fi
 }
 
 # create an instance, name, image_id (the source), sizes_slug, or the size (e.g 1vcpu-1gb), region, boot_script (this is required for expiry)
@@ -258,18 +327,36 @@ create_instance() {
 	domain="example.com"
 	cpu="$(jq -r '.cpu' $AXIOM_PATH/axiom.json)"
 	#ibmcloud sl vs create -H "$name" -D "$domain" -c 2 -m 2048 -d dal12 --image 6018238 --wait 5000 -f  2>&1 >>/dev/null &
-	ibmcloud sl vs create -H "$name" -D "$domain" -c "$cpu" -m "$size_slug" -n 1000 -d "$region" --image "$image_id" --wait 5000 -f  2>&1 >>/dev/null 
+	ibmcloud sl vs create -H "$name" -D "$domain" -c "$cpu" -m "$size_slug" -n 1000 -d "$region" --image "$image_id" -f  2>&1 >>/dev/null 
+  sleep 260
 }
 
 instance_pretty() {
-	data=$(instances)
-	i=0
-	for f in $(echo $data | jq -r '.[].hostname'); do new=$(expr $i +  5); i=$new; done
-	(echo "Instance,IP,Region,Memory,\$/M" && echo $data | jq  -r '.[] | [.hostname, .primaryIpAddress, .datacenter.name, .maxMemory, 5] | @csv' && echo "_,_,_,Total,\$$i") | sed 's/"//g' | column -t -s, | perl -pe '$_ = "\033[0;37m$_\033[0;34m" if($. % 2)'
-	# doctl: (echo "Instance,IP,Region,Memory,\$/M" && echo $data | jq  -r '.[] | [.name, .networks.v4[].ip_address, .region.slug, .size_slug, .size.price_monthly] | @csv' && echo "_,_,To    tal,\$$i") | sed 's/"//g' | column -t -s, | perl -pe '$_ = "\033[0;37m$_\033[0;34m" if($. % 2)'
-		
-	#(echo "Instance,IP,Region,Memory,\$/M" && echo $data | jq  -r '.[] | [.name, .networks.v4[].ip_address, .region.slug, .size_slug, .size.price_monthly] | @csv' && echo "_,_,To    tal,\$$i") | sed 's/"//g' | column -t -s, | perl -pe '$_ = "\033[0;37m$_\033[0;34m" if($. % 2)'
+    data=$(instances)
+    #number of droplets
+    droplets=$(echo $data|jq -r '.[]|.hostname'|wc -l )
+
+    hour_cost=0
+    for f in $(echo $data | jq -r '.[].billingItem.hourlyRecurringFee'); do new=$(bc <<< "$hour_cost + $f"); hour_cost=$new; done
+    totalhourly_Price=$hour_cost
+
+    hours_used=0
+    for f in $(echo $data | jq -r '.[].billingItem.hoursUsed'); do new=$(bc <<< "$hours_used + $f"); hours_used=$new; done
+    totalhours_used=$hours_used
+
+    monthly_cost=0
+    for f in $(echo $data | jq -r '.[].billingItem.orderItem.recurringAfterTaxAmount'); do new=$(bc <<< "$monthly_cost + $f"); monthly_cost=$new; done
+    totalmonthly_Price=$monthly_cost
+
+    header="Instance,Primary Ip,Backend Ip,DC,Memory,CPU,Status,Hours used,\$/H,\$/M"
+    fields=".[] | [.hostname, .primaryIpAddress, .primaryBackendIpAddress, .datacenter.name, .maxMemory, .maxCpu, .powerState.name, .billingItem.hoursUsed, .billingItem.orderItem.hourlyRecurringFee, .billingItem.orderItem.recurringAfterTaxAmount ] | @csv"
+    totals="_,_,_,_,Instances,$droplets,Total Hours,$totalhours_used,\$$totalhourly_Price/hr,\$$totalmonthly_Price/mo" 
+
+    #data is sorted by default by field name    
+    data=$(echo $data | jq  -r "$fields"| sed 's/^,/0,/; :a;s/,,/,0,/g;ta')
+    (echo "$header" && echo "$data" && echo $totals) | sed 's/"//g' | column -t -s, | perl -pe '$_ = "\033[0;37m$_\033[0;34m" if($. % 2)'
 }
+
 # Function used for splitting $src across $instances and rename the split files.
 lsplit() {
 	src="$1"
@@ -320,4 +407,3 @@ conf_check() {
 		generate_sshconfig	
 	fi
 }
-

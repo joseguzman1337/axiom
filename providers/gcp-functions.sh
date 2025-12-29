@@ -26,6 +26,17 @@ instance_ip() {
 	instances | jq -r ".[] | select(.name==\"$host\") | .networkInterfaces[].accessConfigs[].natIP"
 }
 
+instance_ip_cache() {
+	name="$1"
+    config="$2"
+    ssh_config="$AXIOM_PATH/.sshconfig"
+
+    if [[ "$config" != "" ]]; then
+        ssh_config="$config"
+    fi
+    cat "$ssh_config" | grep -A 1 "$name" | awk '{ print $2 }' | tail -n 1
+}
+
 # takes no arguments, creates an fzf menu
 instance_menu() {
 	instances | jq '.[].name' | tr -d '"'
@@ -192,12 +203,14 @@ query_instances() {
 
 query_instances_cache() {
 	selected=""
+    ssh_conf="$AXIOM_PATH/.sshconfig"
 
 	for var in "$@"; do
-		if [[ "$var" =~ "*" ]]
-		then
+        if [[ "$var" =~ "-F=" ]]; then
+            ssh_conf="$(echo "$var" | cut -d "=" -f 2)"
+        elif [[ "$var" =~ "*" ]]; then
 			var=$(echo "$var" | sed 's/*/.*/g')
-			selected="$selected $(cat "$AXIOM_PATH"/.sshconfig | grep "Host " | awk '{ print $2 }' | grep "$var")"
+            selected="$selected $(cat "$ssh_conf" | grep "Host " | awk '{ print $2 }' | grep "$var")"
 		else
 			if [[ $query ]];
 			then
@@ -207,10 +220,10 @@ query_instances_cache() {
 			fi
 		fi
 	done
-
+s
 	if [[ "$query" ]]
 	then
-		selected="$selected $(cat "$AXIOM_PATH"/.sshconfig | grep "Host " | awk '{ print $2 }' | grep -w "$query")"
+        selected="$selected $(cat "$ssh_conf" | grep "Host " | awk '{ print $2 }' | grep -w "$query")"
 	else
 		if [[ ! "$selected" ]]
 		then
@@ -221,7 +234,7 @@ query_instances_cache() {
 
 	selected=$(echo "$selected" | tr ' ' '\n' | sort -u)
 	echo -n $selected
-}
+}s
 
 
 quick_ip() {
@@ -235,13 +248,15 @@ quick_ip() {
 generate_sshconfig() {
 	droplets="$(instances)"
 	echo -n "" > $AXIOM_PATH/.sshconfig.new
+  
+	echo -e "\tServerAliveInterval 60\n" >> $AXIOM_PATH/.sshconfig.new
+  echo -e "\tServerAliveCountMax 60\n" >> $AXIOM_PATH/.sshconfig.new
 
 	for name in $(echo "$droplets" | jq -r '.[].name')
 	do 
 		ip=$(echo "$droplets" | jq -r ".[] | select(.name==\"$name\") | .networkInterfaces[].accessConfigs[].natIP")
 		echo -e "Host $name\n\tHostName $ip\n\tUser op\n\tPort 2266\n" >> $AXIOM_PATH/.sshconfig.new
-    echo -e "ServerAliveInterval 60" >> $AXIOM_PATH/.sshconfig.new
-    echo -e "Host *\n\tControlMaster auto\n\tControlPath  ~/.ssh/sockets/%r@%h-%p\n\tControlPersist 600" >> $AXIOM_PATH/.sshconfig.new
+
 
 	done
 	mv $AXIOM_PATH/.sshconfig.new $AXIOM_PATH/.sshconfig
