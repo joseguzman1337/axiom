@@ -14,4 +14,7 @@ tmp/*
 axiom.json
 images/axiom.json
 interact/includes/functions.sh
-selected.conf
+
+# macOS system files
+.DS_Store
+._*
